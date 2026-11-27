@@ -2,12 +2,19 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { currentSiteSession, encodePasscode } from "@/lib/site-session";
 
 let client: SupabaseClient | null = null;
-let clientStamp = "";
+
+function fetchWithSite(input: RequestInfo | URL, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  const session = currentSiteSession();
+  if (session) {
+    headers.set("x-site-id", session.id);
+    headers.set("x-site-key", encodePasscode(session.passcode));
+  }
+  return fetch(input, { ...init, headers });
+}
 
 export function getSupabase() {
-  const session = currentSiteSession();
-  const stamp = session ? `${session.id}:${session.passcode}` : "";
-  if (client && clientStamp === stamp) return client;
+  if (client) return client;
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) {
@@ -15,14 +22,8 @@ export function getSupabase() {
   }
   client = createClient(url, key, {
     global: {
-      headers: session
-        ? {
-            "x-site-id": session.id,
-            "x-site-key": encodePasscode(session.passcode),
-          }
-        : {},
+      fetch: fetchWithSite,
     },
   });
-  clientStamp = stamp;
   return client;
 }

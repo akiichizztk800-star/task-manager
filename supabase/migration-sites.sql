@@ -82,10 +82,30 @@ end $$;
 
 create or replace function public.request_header(header_name text)
 returns text
-language sql
+language plpgsql
 stable
 as $$
-  select nullif(current_setting('request.headers', true)::json->>lower(header_name), '');
+declare
+  headers json;
+  header_value text;
+begin
+  begin
+    headers := current_setting('request.headers', true)::json;
+  exception
+    when others then
+      headers := null;
+  end;
+  if headers is not null then
+    header_value := nullif(headers->>lower(header_name), '');
+    if header_value is not null then
+      return header_value;
+    end if;
+  end if;
+  return nullif(current_setting('request.header.' || lower(header_name), true), '');
+exception
+  when others then
+    return null;
+end;
 $$;
 
 create or replace function public.request_passcode()
@@ -100,26 +120,38 @@ begin
   if raw is null then
     return null;
   end if;
-  return convert_from(decode(raw, 'base64'), 'utf8');
-exception
-  when others then
-    return null;
+  begin
+    return convert_from(decode(raw, 'base64'), 'utf8');
+  exception
+    when others then
+      return raw;
+  end;
 end;
 $$;
 
-create or replace function public.site_unlocked()
+create or replace function public.site_access_ok(p_site_id text, p_passcode text)
 returns boolean
 language sql
 stable
 security definer
 set search_path = public, extensions
 as $$
-  select exists (
-    select 1
-    from public.sites
-    where id = public.request_header('x-site-id')
-      and passcode_hash = extensions.crypt(public.request_passcode(), passcode_hash)
-  );
+  select coalesce(p_site_id, '') <> ''
+    and coalesce(p_passcode, '') <> ''
+    and exists (
+      select 1
+      from public.sites
+      where id = p_site_id
+        and passcode_hash = extensions.crypt(p_passcode, passcode_hash)
+    );
+$$;
+
+create or replace function public.site_unlocked()
+returns boolean
+language sql
+stable
+as $$
+  select public.site_access_ok(public.request_header('x-site-id'), public.request_passcode());
 $$;
 
 create or replace function public.enter_site(p_name text, p_passcode text)
@@ -129,9 +161,9 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  found public.sites%rowtype;
+  site_row public.sites%rowtype;
 begin
-  select * into found
+  select * into site_row
   from public.sites
   where name = btrim(p_name)
     and passcode_hash = extensions.crypt(p_passcode, passcode_hash);
@@ -139,9 +171,9 @@ begin
     return null;
   end if;
   return jsonb_build_object(
-    'id', found.id,
-    'name', found.name,
-    'hide_names', found.hide_names
+    'id', site_row.id,
+    'name', site_row.name,
+    'hide_names', site_row.hide_names
   );
 end;
 $$;
@@ -153,7 +185,7 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  found public.sites%rowtype;
+  site_row public.sites%rowtype;
   clean_name text := btrim(p_name);
 begin
   if clean_name = '' then
@@ -172,11 +204,11 @@ begin
     extensions.crypt(p_passcode, extensions.gen_salt('bf')),
     true
   )
-  returning * into found;
+  returning * into site_row;
   return jsonb_build_object(
-    'id', found.id,
-    'name', found.name,
-    'hide_names', found.hide_names
+    'id', site_row.id,
+    'name', site_row.name,
+    'hide_names', site_row.hide_names
   );
 end;
 $$;
@@ -188,7 +220,7 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  found public.sites%rowtype;
+  site_row public.sites%rowtype;
 begin
   if not public.site_unlocked() then
     raise exception '拠点の確認に失敗しました';
@@ -196,11 +228,11 @@ begin
   update public.sites
   set hide_names = p_hide
   where id = public.request_header('x-site-id')
-  returning * into found;
+  returning * into site_row;
   return jsonb_build_object(
-    'id', found.id,
-    'name', found.name,
-    'hide_names', found.hide_names
+    'id', site_row.id,
+    'name', site_row.name,
+    'hide_names', site_row.hide_names
   );
 end;
 $$;
@@ -221,15 +253,21 @@ create policy "site_employees"
   on public.employees
   for all
   to anon, authenticated
-  using (site_id = public.request_header('x-site-id') and public.site_unlocked())
-  with check (site_id = public.request_header('x-site-id') and public.site_unlocked());
+  using (
+    site_id = public.request_header('x-site-id')
+    and public.site_access_ok(public.request_header('x-site-id'), public.request_passcode())
+  )
+  with check (
+    site_id = public.request_header('x-site-id')
+    and public.site_access_ok(public.request_header('x-site-id'), public.request_passcode())
+  );
 
 create policy "site_shift_preferences"
   on public.shift_preferences
   for all
   to anon, authenticated
   using (
-    public.site_unlocked()
+    public.site_access_ok(public.request_header('x-site-id'), public.request_passcode())
     and exists (
       select 1 from public.employees
       where employees.id = shift_preferences.employee_id
@@ -237,7 +275,7 @@ create policy "site_shift_preferences"
     )
   )
   with check (
-    public.site_unlocked()
+    public.site_access_ok(public.request_header('x-site-id'), public.request_passcode())
     and exists (
       select 1 from public.employees
       where employees.id = shift_preferences.employee_id
@@ -249,12 +287,19 @@ create policy "site_shift_plans"
   on public.shift_plans
   for all
   to anon, authenticated
-  using (site_id = public.request_header('x-site-id') and public.site_unlocked())
-  with check (site_id = public.request_header('x-site-id') and public.site_unlocked());
+  using (
+    site_id = public.request_header('x-site-id')
+    and public.site_access_ok(public.request_header('x-site-id'), public.request_passcode())
+  )
+  with check (
+    site_id = public.request_header('x-site-id')
+    and public.site_access_ok(public.request_header('x-site-id'), public.request_passcode())
+  );
 
 grant execute on function public.enter_site(text, text) to anon, authenticated;
 grant execute on function public.create_site(text, text) to anon, authenticated;
 grant execute on function public.set_hide_names(boolean) to anon, authenticated;
 grant execute on function public.site_unlocked() to anon, authenticated;
+grant execute on function public.site_access_ok(text, text) to anon, authenticated;
 grant execute on function public.request_header(text) to anon, authenticated;
 grant execute on function public.request_passcode() to anon, authenticated;
