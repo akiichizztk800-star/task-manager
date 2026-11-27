@@ -2,9 +2,13 @@ export type DayWish = "preferred" | "off" | "either" | "paid";
 
 export const DEFAULT_HOLIDAY_QUOTA = 8;
 
+export type EmploymentType = "fulltime" | "parttime" | "doubletrack";
+
 export type Employee = {
   id: string;
   name: string;
+  code: string;
+  employmentType: EmploymentType;
   supervisor: boolean;
   engineer: boolean;
 };
@@ -58,18 +62,18 @@ export type DayIssue = {
 const WEEKDAY_LABELS = ["月", "火", "水", "木", "金", "土", "日"] as const;
 
 export const SEED_EMPLOYEES: Employee[] = [
-  { id: "emp-01", name: "佐藤 美咲", supervisor: true, engineer: false },
-  { id: "emp-02", name: "鈴木 大輔", supervisor: true, engineer: false },
-  { id: "emp-03", name: "高橋 蓮", supervisor: true, engineer: true },
-  { id: "emp-04", name: "田中 陽菜", supervisor: false, engineer: true },
-  { id: "emp-05", name: "伊藤 颯", supervisor: false, engineer: true },
-  { id: "emp-06", name: "渡辺 結衣", supervisor: false, engineer: false },
-  { id: "emp-07", name: "山本 翔", supervisor: false, engineer: false },
-  { id: "emp-08", name: "中村 葵", supervisor: false, engineer: false },
-  { id: "emp-09", name: "小林 海斗", supervisor: false, engineer: false },
-  { id: "emp-10", name: "加藤 凛", supervisor: false, engineer: false },
-  { id: "emp-11", name: "吉田 大和", supervisor: false, engineer: false },
-  { id: "emp-12", name: "山田 杏", supervisor: false, engineer: false },
+  { id: "emp-01", code: "E-01", name: "佐藤 美咲", employmentType: "fulltime", supervisor: true, engineer: false },
+  { id: "emp-02", code: "E-02", name: "鈴木 大輔", employmentType: "fulltime", supervisor: true, engineer: false },
+  { id: "emp-03", code: "E-03", name: "高橋 蓮", employmentType: "fulltime", supervisor: true, engineer: true },
+  { id: "emp-04", code: "E-04", name: "田中 陽菜", employmentType: "fulltime", supervisor: false, engineer: true },
+  { id: "emp-05", code: "E-05", name: "伊藤 颯", employmentType: "fulltime", supervisor: false, engineer: true },
+  { id: "emp-06", code: "E-06", name: "渡辺 結衣", employmentType: "fulltime", supervisor: false, engineer: false },
+  { id: "emp-07", code: "E-07", name: "山本 翔", employmentType: "parttime", supervisor: false, engineer: false },
+  { id: "emp-08", code: "E-08", name: "中村 葵", employmentType: "parttime", supervisor: false, engineer: false },
+  { id: "emp-09", code: "E-09", name: "小林 海斗", employmentType: "parttime", supervisor: false, engineer: false },
+  { id: "emp-10", code: "E-10", name: "加藤 凛", employmentType: "doubletrack", supervisor: false, engineer: false },
+  { id: "emp-11", code: "E-11", name: "吉田 大和", employmentType: "doubletrack", supervisor: false, engineer: false },
+  { id: "emp-12", code: "E-12", name: "山田 杏", employmentType: "doubletrack", supervisor: false, engineer: false },
 ];
 
 export function weekdayLabels() {
@@ -82,6 +86,21 @@ export function weekdayLabel(weekday: number) {
 
 export function normalizeName(name: string) {
   return name.trim().replace(/\s+/g, " ");
+}
+
+export function employmentLabel(type: EmploymentType) {
+  if (type === "parttime") return "アルバイト";
+  if (type === "doubletrack") return "ダブルトラック";
+  return "社員";
+}
+
+export function usesHolidayQuota(employee: Employee) {
+  return employee.employmentType === "fulltime";
+}
+
+export function employeeLabel(employee: Employee, hideNames: boolean) {
+  if (hideNames) return employee.code;
+  return employee.name;
 }
 
 export function roleText(employee: Employee) {
@@ -113,11 +132,10 @@ export function nextWish(wish: DayWish): DayWish {
   return "either";
 }
 
-export function getNextMonth(base = new Date()): MonthGrid {
-  const first = new Date(base.getFullYear(), base.getMonth() + 1, 1);
-  const year = first.getFullYear();
-  const monthIndex = first.getMonth();
-  const key = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
+export function monthGrid(year: number, month: number): MonthGrid {
+  const monthIndex = month - 1;
+  const key = `${year}-${String(month).padStart(2, "0")}`;
+  const first = new Date(year, monthIndex, 1);
   const count = new Date(year, monthIndex + 1, 0).getDate();
   const lead = (first.getDay() + 6) % 7;
   const cells: Array<CalendarDay | null> = Array.from({ length: lead }, () => null);
@@ -136,10 +154,46 @@ export function getNextMonth(base = new Date()): MonthGrid {
   return {
     key,
     year,
-    month: monthIndex + 1,
-    label: `${year}年${monthIndex + 1}月`,
+    month,
+    label: `${year}年${month}月`,
     cells,
   };
+}
+
+export function getNextMonth(base = new Date()): MonthGrid {
+  const first = new Date(base.getFullYear(), base.getMonth() + 1, 1);
+  return monthGrid(first.getFullYear(), first.getMonth() + 1);
+}
+
+export function listPlanningMonths(today = new Date()): MonthGrid[] {
+  const cursor = new Date(2026, 11, 1);
+  const horizon = new Date(today.getFullYear(), today.getMonth() + 12, 1);
+  const stop = horizon < new Date(2027, 11, 1) ? new Date(2027, 11, 1) : horizon;
+  const months: MonthGrid[] = [];
+  while (cursor <= stop) {
+    months.push(monthGrid(cursor.getFullYear(), cursor.getMonth() + 1));
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return months;
+}
+
+export function weeksOf(month: MonthGrid): CalendarDay[][] {
+  const weeks: CalendarDay[][] = [];
+  let current: CalendarDay[] = [];
+  for (const day of daysInMonth(month)) {
+    const mondayIndex = (day.weekday + 6) % 7;
+    if (mondayIndex === 0 && current.length > 0) {
+      weeks.push(current);
+      current = [];
+    }
+    current.push(day);
+  }
+  if (current.length > 0) weeks.push(current);
+  return weeks;
+}
+
+export function weeklyOffTarget(dayCount: number) {
+  return dayCount >= 2 ? 2 : 0;
 }
 
 export function daysInMonth(grid: MonthGrid) {
@@ -189,12 +243,18 @@ function parseQuotas(value: unknown): Record<string, number> {
   );
 }
 
+function isEmploymentType(value: unknown): value is EmploymentType {
+  return value === "fulltime" || value === "parttime" || value === "doubletrack";
+}
+
 function isEmployee(value: unknown): value is Employee {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   return (
     typeof record.id === "string" &&
     typeof record.name === "string" &&
+    typeof record.code === "string" &&
+    isEmploymentType(record.employmentType) &&
     typeof record.supervisor === "boolean" &&
     typeof record.engineer === "boolean"
   );
@@ -257,7 +317,7 @@ export function holidayQuota(store: PlannerStore, monthKey: string) {
 }
 
 export function employeeHolidayGoal(
-  employeeId: string,
+  employee: Employee,
   preferences: MonthPreferences[],
   month: MonthGrid,
   quota: number,
@@ -266,7 +326,7 @@ export function employeeHolidayGoal(
   let paid = 0;
   let locked = 0;
   for (const day of days) {
-    const wish = wishFor(preferences, employeeId, month.key, day.iso);
+    const wish = wishFor(preferences, employee.id, month.key, day.iso);
     if (wish === "paid") {
       paid += 1;
       locked += 1;
@@ -274,7 +334,11 @@ export function employeeHolidayGoal(
       locked += 1;
     }
   }
-  const targetOff = Math.min(days.length, Math.max(quota + paid, locked));
+  const monthlyTarget = usesHolidayQuota(employee)
+    ? Math.max(quota + paid, locked)
+    : locked;
+  const weeklyFloor = weeksOf(month).reduce((sum, week) => sum + weeklyOffTarget(week.length), 0);
+  const targetOff = Math.min(days.length, Math.max(monthlyTarget, weeklyFloor));
   return { paid, locked, targetOff, targetWork: days.length - targetOff };
 }
 
@@ -290,13 +354,30 @@ export function generateAssignments(
   quota: number,
 ): Record<string, string[]> {
   const days = daysInMonth(month);
+  const weeks = weeksOf(month);
+  const weekIndexByIso = new Map<string, number>();
+  weeks.forEach((week, weekIndex) => {
+    week.forEach((day) => weekIndexByIso.set(day.iso, weekIndex));
+  });
   const states = employees.map((employee) => {
-    const goal = employeeHolidayGoal(employee.id, preferences, month, quota);
-    return { employee, ...goal, work: 0, off: 0 };
+    const goal = employeeHolidayGoal(employee, preferences, month, quota);
+    return { employee, ...goal, work: 0, off: 0, weekOff: 0 };
   });
   const assignments: Record<string, string[]> = {};
+  let currentWeek = -1;
 
   days.forEach((day, index) => {
+    const weekIndex = weekIndexByIso.get(day.iso) ?? 0;
+    if (weekIndex !== currentWeek) {
+      currentWeek = weekIndex;
+      states.forEach((state) => {
+        state.weekOff = 0;
+      });
+    }
+    const week = weeks[weekIndex] ?? [day];
+    const dayPos = Math.max(0, week.findIndex((item) => item.iso === day.iso));
+    const daysLeftInWeek = week.length - dayPos;
+    const weekTarget = weeklyOffTarget(week.length);
     const daysLeft = days.length - index;
     const wishOf = (employee: Employee) => wishFor(preferences, employee.id, month.key, day.iso);
     const available = states.filter((state) => {
@@ -310,7 +391,11 @@ export function generateAssignments(
     );
     const mustOff = new Set(
       available
-        .filter((state) => state.targetOff - state.off >= daysLeft)
+        .filter(
+          (state) =>
+            state.targetOff - state.off >= daysLeft ||
+            (weekTarget > 0 && weekTarget - state.weekOff >= daysLeftInWeek),
+        )
         .map((state) => state.employee.id),
     );
     const chosen = new Set<string>();
@@ -319,7 +404,8 @@ export function generateAssignments(
       const workNeed = state.targetWork - state.work;
       const offNeed = state.targetOff - state.off;
       const wishBonus = wishOf(state.employee) === "preferred" ? 0.35 : 0;
-      return workNeed / daysLeft - offNeed / daysLeft + wishBonus;
+      const weekNeed = Math.max(0, weekTarget - state.weekOff);
+      return workNeed / daysLeft - offNeed / daysLeft - weekNeed * 0.45 + wishBonus;
     }
 
     function ranked(pool: typeof states, allowMustOff: boolean) {
@@ -385,7 +471,10 @@ export function generateAssignments(
 
     for (const state of states) {
       if (chosen.has(state.employee.id)) state.work += 1;
-      else state.off += 1;
+      else {
+        state.off += 1;
+        state.weekOff += 1;
+      }
     }
 
     assignments[day.iso] = employees
@@ -408,6 +497,26 @@ export function assessDay(employees: Employee[], workingIds: string[]): Omit<Day
     severe: working.length < 5 || !working.some((employee) => employee.supervisor),
     messages,
   };
+}
+
+export function assessWeeklyOffs(
+  employees: Employee[],
+  assignments: Record<string, string[]>,
+  month: MonthGrid,
+  hideNames: boolean,
+): string[] {
+  return weeksOf(month).flatMap((week) => {
+    const target = weeklyOffTarget(week.length);
+    if (target === 0) return [];
+    const start = week[0];
+    return employees.flatMap((employee) => {
+      const offs = week.filter((day) => !(assignments[day.iso] ?? []).includes(employee.id)).length;
+      if (offs >= target) return [];
+      return [
+        `${employeeLabel(employee, hideNames)} ${month.month}月${start.day}日の週は休日${offs}日（${target}日未満）`,
+      ];
+    });
+  });
 }
 
 export function assessPlan(

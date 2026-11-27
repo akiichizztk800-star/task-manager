@@ -8,7 +8,7 @@ export default function Home() {
       <main className="mx-auto w-full max-w-4xl px-4 py-10">
         <p className="text-sm font-medium text-teal-700">Supabase試作</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight text-stone-900">
-          条件に沿って来月のシフトを作る
+          2026年12月以降のシフトを作る
         </h1>
         <p className="mt-3 max-w-2xl text-stone-600">
           従業員、希望、確定シフトは Supabase に保存されます。従業員画面の「デモデータ初期化」で12名分を投入でき、スマホから送った希望は店長画面に反映されます。
@@ -21,7 +21,7 @@ export default function Home() {
             <p className="text-sm font-medium text-teal-700">従業員</p>
             <p className="mt-2 text-xl font-semibold text-stone-900">役割を決める</p>
             <p className="mt-2 text-sm text-stone-600">
-              責任者、エンジニア、一般スタッフを追加・編集します。兼任もできます。
+              社員、アルバイト、ダブルトラックと役割を登録します。拠点ごとに名前を隠せます。
             </p>
           </Link>
           <Link
@@ -31,7 +31,7 @@ export default function Home() {
             <p className="text-sm font-medium text-teal-700">スタッフ</p>
             <p className="mt-2 text-xl font-semibold text-stone-900">希望を出す</p>
             <p className="mt-2 text-sm text-stone-600">
-              日ごとに ◎ 出勤、× 休み、△ どちらでも可、有給を送ります。有給は規定休日に加算されます。
+              2026年12月以降の月を選び、◎ × △ と有給を送ります。社員の有給は規定休日に加算されます。
             </p>
           </Link>
           <Link

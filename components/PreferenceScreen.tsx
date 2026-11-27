@@ -5,16 +5,19 @@ import Link from "next/link";
 import {
   type DayWish,
   employeeHolidayGoal,
+  employeeLabel,
   holidayQuota,
   nextWish,
   roleText,
+  usesHolidayQuota,
   weekdayLabels,
   wishLabel,
   wishSymbol,
 } from "@/lib/planner";
+import { useSiteSession } from "@/lib/site-session";
+import { selectPlanningMonth, usePlanningMonth, usePlanningMonths } from "@/lib/use-month";
 import {
   persistPreferences,
-  useNextMonth,
   usePlannerError,
   usePlannerStore,
 } from "@/lib/use-planner";
@@ -22,7 +25,9 @@ import {
 export function PreferenceScreen() {
   const store = usePlannerStore();
   const connectionError = usePlannerError();
-  const month = useNextMonth();
+  const session = useSiteSession();
+  const month = usePlanningMonth();
+  const months = usePlanningMonths();
   const [employeeId, setEmployeeId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, DayWish> | null>(null);
   const [draftFor, setDraftFor] = useState<string | null>(null);
@@ -64,7 +69,7 @@ export function PreferenceScreen() {
       await persistPreferences(employee.id, month!.key, days);
       setDraft(null);
       setDraftFor(null);
-      setSavedName(employee.name);
+      setSavedName(employeeLabel(employee, session?.hideNames !== false));
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "送信に失敗しました。");
@@ -75,19 +80,28 @@ export function PreferenceScreen() {
 
   const preferredCount = Object.values(days).filter((wish) => wish === "preferred").length;
   const offCount = Object.values(days).filter((wish) => wish === "off").length;
+  const hideNames = session?.hideNames !== false;
   const quota = holidayQuota(store, month.key);
-  const goal = employee
-    ? employeeHolidayGoal(employee.id, store.preferences, month, quota)
+  const previewEmployee = employee;
+  const previewPreferences = previewEmployee
+    ? [
+        ...store.preferences.filter(
+          (item) => !(item.employeeId === previewEmployee.id && item.month === month.key),
+        ),
+        { employeeId: previewEmployee.id, month: month.key, days },
+      ]
+    : store.preferences;
+  const goal = previewEmployee
+    ? employeeHolidayGoal(previewEmployee, previewPreferences, month, quota)
     : null;
-  const draftPaid = Object.values(days).filter((wish) => wish === "paid").length;
-  const shownPaid = draftFor === activeId && draft ? draftPaid : (goal?.paid ?? 0);
-  const shownTarget = quota + shownPaid;
+  const shownPaid = goal?.paid ?? 0;
+  const shownTarget = goal?.targetOff ?? 0;
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-8">
       <h1 className="text-2xl font-semibold tracking-tight text-stone-900">出勤希望を出す</h1>
       <p className="mt-2 text-stone-600">
-        名前を選び、{month.label}の各日を指定します。有給にした日は休みになり、その日数は規定休日数に加算されます。未設定の日は △ です。
+        {hideNames ? "表示コード" : "名前"}を選び、対象月の各日を指定します。社員の有給は規定休日に加算されます。アルバイトとダブルトラックは規定休日の対象外です。未設定の日は △ です。
       </p>
 
       {store.employees.length === 0 ? (
@@ -100,7 +114,7 @@ export function PreferenceScreen() {
       ) : (
         <form onSubmit={onSubmit} className="mt-6 rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
           <label className="block">
-            <span className="text-sm font-medium text-stone-700">名前</span>
+            <span className="text-sm font-medium text-stone-700">{hideNames ? "表示コード" : "名前"}</span>
             <select
               value={activeId ?? ""}
               onChange={(event) => {
@@ -113,7 +127,7 @@ export function PreferenceScreen() {
             >
               {store.employees.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.name}（{roleText(item)}）
+                  {employeeLabel(item, hideNames)}（{roleText(item)}）
                 </option>
               ))}
             </select>
@@ -122,14 +136,30 @@ export function PreferenceScreen() {
           <div className="mt-5 flex items-end justify-between gap-3">
             <div>
               <h2 className="text-sm font-medium text-stone-700">対象月</h2>
-              <p className="mt-1 text-lg font-semibold text-stone-900">{month.label}</p>
+              <select
+                value={month.key}
+                onChange={(event) => {
+                  selectPlanningMonth(event.target.value);
+                  setDraft(null);
+                  setDraftFor(null);
+                }}
+                className="mt-1 h-12 rounded-xl border border-stone-300 bg-white px-3 outline-none ring-teal-700 focus:ring-2"
+              >
+                {(months ?? [month]).map((item) => (
+                  <option key={item.key} value={item.key}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <p className="text-right text-sm text-stone-500">
               ◎ {preferredCount}日 / × {offCount}日 / 有 {shownPaid}日
             </p>
           </div>
           <p className="mt-2 text-sm text-stone-600">
-            規定休日は{quota}日です。有給{shownPaid}日を加算すると、休みの目標は{shownTarget}日です。
+            {employee && usesHolidayQuota(employee)
+              ? `社員の規定休日は${quota}日です。有給${shownPaid}日と週2日の休日を含めた休みの目標は${shownTarget}日です。`
+              : `この区分は規定休日の対象外です。希望の休みと、週あたり2日の休日を含めた目標は${shownTarget}日です。`}
           </p>
           <p className="mt-1 text-sm text-stone-500">日付を押すたびに △ → ◎ → × → 有 → △ と変わります。</p>
 
@@ -179,7 +209,7 @@ export function PreferenceScreen() {
           ) : null}
           {savedName ? (
             <p className="mt-4 text-sm text-teal-800" role="status">
-              {savedName}さんの希望を保存しました。
+              {hideNames ? savedName : `${savedName}さん`}の希望を保存しました。
               <Link href="/manager" className="ml-2 underline">
                 シフト作成へ
               </Link>

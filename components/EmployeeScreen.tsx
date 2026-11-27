@@ -3,25 +3,37 @@
 import { FormEvent, useState } from "react";
 import {
   type Employee,
+  type EmploymentType,
   createSeed,
   daysInMonth,
-  getNextMonth,
+  employmentLabel,
   normalizeName,
 } from "@/lib/planner";
+import { useSiteSession } from "@/lib/site-session";
+import { usePlanningMonth } from "@/lib/use-month";
 import {
   persistDemoData,
   persistEmployee,
   persistEmployeeRemoval,
+  persistHideNames,
   usePlannerError,
   usePlannerStore,
 } from "@/lib/use-planner";
 import { RoleBadges } from "@/components/RoleBadges";
 
-const emptyDraft = { name: "", supervisor: false, engineer: false };
+const emptyDraft = {
+  name: "",
+  code: "",
+  employmentType: "fulltime" as EmploymentType,
+  supervisor: false,
+  engineer: false,
+};
 
 export function EmployeeScreen() {
   const store = usePlannerStore();
   const connectionError = usePlannerError();
+  const session = useSiteSession();
+  const month = usePlanningMonth();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState(emptyDraft);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +54,8 @@ export function EmployeeScreen() {
     setEditingId(employee.id);
     setDraft({
       name: employee.name,
+      code: employee.code,
+      employmentType: employee.employmentType,
       supervisor: employee.supervisor,
       engineer: employee.engineer,
     });
@@ -55,6 +69,11 @@ export function EmployeeScreen() {
       setError("名前を入力してください。");
       return;
     }
+    const code = draft.code.trim().toUpperCase();
+    if (!code) {
+      setError("表示コードを入力してください。");
+      return;
+    }
     const duplicate = store!.employees.some(
       (employee) => employee.id !== editingId && normalizeName(employee.name) === name,
     );
@@ -62,11 +81,20 @@ export function EmployeeScreen() {
       setError("同じ名前の従業員がいます。");
       return;
     }
+    const duplicateCode = store!.employees.some(
+      (employee) => employee.id !== editingId && employee.code.toUpperCase() === code,
+    );
+    if (duplicateCode) {
+      setError("同じ表示コードの従業員がいます。");
+      return;
+    }
     setBusy(true);
     try {
       await persistEmployee({
         id: editingId ?? crypto.randomUUID(),
         name,
+        code,
+        employmentType: draft.employmentType,
         supervisor: draft.supervisor,
         engineer: draft.engineer,
       });
@@ -98,8 +126,8 @@ export function EmployeeScreen() {
   }
 
   async function restoreSeed() {
-    if (!window.confirm("Supabase上の従業員、希望、確定シフトを、12名のデモデータで上書きします。")) return;
-    const month = getNextMonth();
+    if (!window.confirm("この拠点の従業員、希望、確定シフトを、12名のデモデータで上書きします。他の拠点は変わりません。")) return;
+    if (!month) return;
     setBusy(true);
     try {
       await persistDemoData(createSeed(month.key, daysInMonth(month).length));
@@ -119,8 +147,8 @@ export function EmployeeScreen() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-stone-900">従業員</h1>
           <p className="mt-2 text-stone-600">
-            責任者 {supervisorCount}名、エンジニア {engineerCount}名、合計 {store.employees.length}名。
-            どちらも外すと一般スタッフです。両方付けると兼任になります。
+            {session?.name}の従業員です。責任者 {supervisorCount}名、エンジニア {engineerCount}名、合計 {store.employees.length}名。
+            社員だけが規定休日数の対象です。名前を隠すと、希望とシフト表には表示コードだけが出ます。
           </p>
         </div>
           <button
@@ -145,6 +173,32 @@ export function EmployeeScreen() {
             placeholder="例: 佐々木 葵"
             className="mt-1 h-12 w-full rounded-xl border border-stone-300 bg-stone-50 px-4 outline-none ring-teal-700 focus:bg-white focus:ring-2"
           />
+        </label>
+        <label className="mt-3 block">
+          <span className="text-sm text-stone-600">表示コード</span>
+          <input
+            value={draft.code}
+            onChange={(event) => setDraft((current) => ({ ...current, code: event.target.value }))}
+            placeholder="例: E-13"
+            className="mt-1 h-12 w-full rounded-xl border border-stone-300 bg-stone-50 px-4 outline-none ring-teal-700 focus:bg-white focus:ring-2"
+          />
+        </label>
+        <label className="mt-3 block">
+          <span className="text-sm text-stone-600">区分</span>
+          <select
+            value={draft.employmentType}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                employmentType: event.target.value as EmploymentType,
+              }))
+            }
+            className="mt-1 h-12 w-full rounded-xl border border-stone-300 bg-white px-3 outline-none ring-teal-700 focus:ring-2"
+          >
+            <option value="fulltime">{employmentLabel("fulltime")}</option>
+            <option value="parttime">{employmentLabel("parttime")}</option>
+            <option value="doubletrack">{employmentLabel("doubletrack")}</option>
+          </select>
         </label>
         <fieldset className="mt-4 flex flex-wrap gap-4">
           <legend className="sr-only">役割</legend>
@@ -171,6 +225,15 @@ export function EmployeeScreen() {
             エンジニア
           </label>
         </fieldset>
+        <label className="mt-4 flex items-center gap-2 text-sm text-stone-800">
+          <input
+            type="checkbox"
+            checked={session?.hideNames !== false}
+            onChange={(event) => void persistHideNames(event.target.checked)}
+            className="size-4 accent-teal-700"
+          />
+          希望とシフト表では名前を出さない
+        </label>
         {error ? (
           <p className="mt-3 text-sm text-rose-700" role="alert">
             {error}
@@ -207,7 +270,10 @@ export function EmployeeScreen() {
           store.employees.map((employee) => (
             <li key={employee.id} className="flex items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-stone-900">{employee.name}</p>
+                <p className="font-medium text-stone-900">
+                  {employee.name}
+                  <span className="ml-2 text-sm font-normal text-stone-500">{employee.code}</span>
+                </p>
                 <div className="mt-1">
                   <RoleBadges employee={employee} />
                 </div>

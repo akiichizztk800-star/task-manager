@@ -4,6 +4,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import {
   type DayWish,
   type Employee,
+  type EmploymentType,
   type MonthGrid,
   type PlannerStore,
   type ShiftPlan,
@@ -15,6 +16,7 @@ import {
   upsertEmployee,
   upsertPreferences,
 } from "@/lib/planner";
+import { currentSiteSession, saveSiteSession } from "@/lib/site-session";
 import { getSupabase } from "@/lib/supabase";
 
 type RemoteSnapshot = {
@@ -25,6 +27,8 @@ type RemoteSnapshot = {
 type EmployeeRow = {
   id: string;
   name: string;
+  code: string;
+  employment_type: EmploymentType;
   supervisor: boolean;
   engineer: boolean;
 };
@@ -45,6 +49,8 @@ const serverSnapshot: RemoteSnapshot = { store: null, error: null };
 let snapshot: RemoteSnapshot = serverSnapshot;
 const listeners = new Set<() => void>();
 let started = false;
+let startedFor = "";
+let listening = false;
 
 function emit(next: RemoteSnapshot) {
   snapshot = next;
@@ -71,9 +77,12 @@ function formatError(error: { message?: string; code?: string }) {
     error.code === "PGRST205" ||
     message.includes("schema cache") ||
     message.includes("does not exist") ||
-    message.includes("Could not find")
+    message.includes("Could not find") ||
+    message.includes("enter_site") ||
+    message.includes("employment_type") ||
+    message.includes("site_id")
   ) {
-    return "テーブルがまだありません。SupabaseのSQL Editorで supabase/schema.sql を実行してください。";
+    return "拠点用の更新が必要です。SupabaseのSQL Editorで supabase/migration-sites.sql を実行してください。";
   }
   return message;
 }
@@ -113,6 +122,8 @@ function toStore(employees: EmployeeRow[], preferences: PreferenceRow[], plans: 
     employees: employees.map((employee) => ({
       id: employee.id,
       name: employee.name,
+      code: employee.code,
+      employmentType: employee.employment_type,
       supervisor: employee.supervisor,
       engineer: employee.engineer,
     })),
@@ -127,11 +138,16 @@ function toStore(employees: EmployeeRow[], preferences: PreferenceRow[], plans: 
 }
 
 async function refresh() {
+  const session = currentSiteSession();
+  if (!session) {
+    emit({ store: null, error: "拠点の合言葉を入力してください。" });
+    return;
+  }
   const db = getSupabase();
   const [employees, preferences, plans] = await Promise.all([
-    db.from("employees").select("id, name, supervisor, engineer").order("created_at").order("id"),
+    db.from("employees").select("id, name, code, employment_type, supervisor, engineer").order("created_at").order("id"),
     db.from("shift_preferences").select("employee_id, month, days"),
-    db.from("shift_plans").select("month, holiday_quota, assignments"),
+    db.from("shift_plans").select("month, holiday_quota, assignments").eq("site_id", session.id),
   ]);
   const error = employees.error ?? preferences.error ?? plans.error;
   if (error) {
@@ -156,12 +172,16 @@ function describeFailure(error: unknown) {
 }
 
 function start() {
-  if (started) return;
+  const siteId = currentSiteSession()?.id ?? "";
+  if (started && startedFor === siteId) return;
   started = true;
+  startedFor = siteId;
   queueMicrotask(() => {
     void refresh().catch((error: unknown) => {
       emit({ store: snapshot.store, error: describeFailure(error) });
     });
+    if (listening) return;
+    listening = true;
     try {
       const db = getSupabase();
       db.channel("planner-changes")
@@ -230,6 +250,12 @@ function requireStore() {
   return snapshot.store;
 }
 
+function requireSite() {
+  const session = currentSiteSession();
+  if (!session) throw new Error("拠点の合言葉を入力してください。");
+  return session;
+}
+
 async function fail(error: { message?: string; code?: string }): Promise<never> {
   await refresh();
   throw new Error(formatError(error));
@@ -238,11 +264,15 @@ async function fail(error: { message?: string; code?: string }): Promise<never> 
 export async function persistEmployee(employee: Employee) {
   const next = upsertEmployee(requireStore(), employee);
   emit({ store: next, error: null });
+  const site = requireSite();
   const { error } = await getSupabase().from("employees").upsert({
     id: employee.id,
     name: employee.name,
+    code: employee.code,
+    employment_type: employee.employmentType,
     supervisor: employee.supervisor,
     engineer: employee.engineer,
+    site_id: site.id,
   });
   if (error) return fail(error);
 }
@@ -256,11 +286,12 @@ export async function persistEmployeeRemoval(employeeId: string) {
   await Promise.all(
     Object.entries(next.holidayQuotas).map(([month, holidayQuota]) =>
       db.from("shift_plans").upsert({
+        site_id: requireSite().id,
         month,
         holiday_quota: holidayQuota,
         assignments: next.plans.find((plan) => plan.month === month)?.assignments ?? {},
         updated_at: new Date().toISOString(),
-      }),
+      }, { onConflict: "site_id,month" }),
     ),
   );
 }
@@ -289,11 +320,12 @@ export async function persistAssignments(month: string, assignments: Record<stri
   const next = savePlan(current, month, assignments);
   emit({ store: next, error: null });
   const { error } = await getSupabase().from("shift_plans").upsert({
+    site_id: requireSite().id,
     month,
     holiday_quota: next.holidayQuotas[month] ?? DEFAULT_HOLIDAY_QUOTA,
     assignments,
     updated_at: new Date().toISOString(),
-  });
+  }, { onConflict: "site_id,month" });
   if (error) return fail(error);
 }
 
@@ -302,40 +334,76 @@ export async function persistHolidayQuota(month: string, quota: number) {
   const next = setHolidayQuota(current, month, quota);
   emit({ store: next, error: null });
   const { error } = await getSupabase().from("shift_plans").upsert({
+    site_id: requireSite().id,
     month,
     holiday_quota: next.holidayQuotas[month] ?? quota,
     assignments: next.plans.find((plan) => plan.month === month)?.assignments ?? {},
     updated_at: new Date().toISOString(),
-  });
+  }, { onConflict: "site_id,month" });
   if (error) return fail(error);
 }
 
+export function resetPlanner() {
+  started = false;
+  startedFor = "";
+  emit({ store: null, error: null });
+}
+
+function scopeSeed(seed: PlannerStore, siteId: string): PlannerStore {
+  const map = new Map(seed.employees.map((employee) => [employee.id, `${siteId}-${employee.code}`]));
+  return {
+    ...seed,
+    employees: seed.employees.map((employee) => ({ ...employee, id: map.get(employee.id) ?? employee.id })),
+    preferences: seed.preferences.map((preference) => ({
+      ...preference,
+      employeeId: map.get(preference.employeeId) ?? preference.employeeId,
+    })),
+    plans: [],
+  };
+}
+
+export async function persistHideNames(hideNames: boolean) {
+  const session = requireSite();
+  const { data, error } = await getSupabase().rpc("set_hide_names", { p_hide: hideNames });
+  if (error) return fail(error);
+  const profile = data as { id?: string; name?: string; hide_names?: boolean } | null;
+  saveSiteSession({
+    ...session,
+    hideNames: profile?.hide_names ?? hideNames,
+  });
+}
+
 export async function persistDemoData(seed: PlannerStore) {
+  const site = requireSite();
+  const scoped = scopeSeed(seed, site.id);
   const db = getSupabase();
   const cleared = await Promise.all([
     db.from("shift_preferences").delete().not("employee_id", "is", null),
-    db.from("shift_plans").delete().not("month", "is", null),
+    db.from("shift_plans").delete().eq("site_id", site.id),
   ]);
   const clearError = cleared.find((result) => result.error)?.error;
   if (clearError) return fail(clearError);
-  const removedEmployees = await db.from("employees").delete().not("id", "is", null);
+  const removedEmployees = await db.from("employees").delete().eq("site_id", site.id);
   if (removedEmployees.error) return fail(removedEmployees.error);
 
-  emit({ store: seed, error: null });
+  emit({ store: scoped, error: null });
 
   const insertedEmployees = await db.from("employees").insert(
-    seed.employees.map((employee) => ({
+    scoped.employees.map((employee) => ({
       id: employee.id,
       name: employee.name,
+      code: employee.code,
+      employment_type: employee.employmentType,
       supervisor: employee.supervisor,
       engineer: employee.engineer,
+      site_id: site.id,
     })),
   );
   if (insertedEmployees.error) return fail(insertedEmployees.error);
 
-  if (seed.preferences.length > 0) {
+  if (scoped.preferences.length > 0) {
     const insertedPreferences = await db.from("shift_preferences").insert(
-      seed.preferences.map((preference) => ({
+      scoped.preferences.map((preference) => ({
         employee_id: preference.employeeId,
         month: preference.month,
         days: preference.days,
@@ -345,7 +413,8 @@ export async function persistDemoData(seed: PlannerStore) {
   }
 
   const insertedPlans = await db.from("shift_plans").insert(
-    Object.entries(seed.holidayQuotas).map(([month, holidayQuota]) => ({
+    Object.entries(scoped.holidayQuotas).map(([month, holidayQuota]) => ({
+      site_id: site.id,
       month,
       holiday_quota: holidayQuota,
       assignments: seed.plans.find((plan) => plan.month === month)?.assignments ?? {},

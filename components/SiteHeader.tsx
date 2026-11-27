@@ -1,4 +1,9 @@
+"use client";
+
 import Link from "next/link";
+import { leaveSite } from "@/components/SiteGate";
+import { resetPlanner } from "@/lib/use-planner";
+import { useSiteSession } from "@/lib/site-session";
 
 const links = [
   { href: "/employees", id: "employees", label: "従業員" },
@@ -11,6 +16,7 @@ export function SiteHeader({
 }: {
   current: "home" | "employees" | "staff" | "manager";
 }) {
+  const session = useSiteSession();
   return (
     <header className="border-b border-stone-200 bg-white">
       <div className="mx-auto flex w-full max-w-[1400px] flex-wrap items-center justify-between gap-3 px-4 py-4">
@@ -39,6 +45,18 @@ export function SiteHeader({
             );
           })}
         </nav>
+        {session ? (
+          <button
+            type="button"
+            onClick={() => {
+              resetPlanner();
+              leaveSite();
+            }}
+            className="text-sm text-stone-500 hover:text-stone-900"
+          >
+            {session.name}から出る
+          </button>
+        ) : null}
       </div>
     </header>
   );

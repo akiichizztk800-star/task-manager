@@ -5,21 +5,25 @@ import Link from "next/link";
 import { RoleBadges } from "@/components/RoleBadges";
 import {
   assessPlan,
+  assessWeeklyOffs,
   daysInMonth,
   employeeHolidayGoal,
+  employeeLabel,
   generateAssignments,
   holidayQuota,
   toggleAssignment,
+  usesHolidayQuota,
   weekdayLabel,
   wishFor,
   wishLabel,
   wishSymbol,
   workdayCount,
 } from "@/lib/planner";
+import { useSiteSession } from "@/lib/site-session";
+import { selectPlanningMonth, usePlanningMonth, usePlanningMonths } from "@/lib/use-month";
 import {
   persistAssignments,
   persistHolidayQuota,
-  useNextMonth,
   usePlannerError,
   usePlannerStore,
 } from "@/lib/use-planner";
@@ -28,19 +32,24 @@ const rules = [
   "絶対: 休み希望（×）と有給の日は割り当てない",
   "絶対: 毎日5人以上を出勤にする",
   "絶対: 毎日、責任者を1人以上入れる",
+  "絶対: 月曜始まりの各週で、2日以上休ませる（週の日数が2日未満の端数は除く）",
   "努力: 毎日、エンジニアを1人以上入れる",
-  "休日: 規定休日数に有給日数を足した日数だけ休ませる",
+  "休日: 社員だけ、規定休日数に有給日数を足した日数だけ休ませる",
 ];
 
 export function PlannerScreen() {
   const store = usePlannerStore();
   const connectionError = usePlannerError();
-  const month = useNextMonth();
+  const session = useSiteSession();
+  const month = usePlanningMonth();
+  const months = usePlanningMonths();
   const [actionError, setActionError] = useState<string | null>(null);
 
   const days = month ? daysInMonth(month) : [];
   const plan = store && month ? (store.plans.find((item) => item.month === month.key) ?? null) : null;
+  const hideNames = session?.hideNames !== false;
   const issues = store && plan ? assessPlan(store.employees, plan.assignments, days) : [];
+  const weeklyIssues = store && plan && month ? assessWeeklyOffs(store.employees, plan.assignments, month, hideNames) : [];
 
   if (!store || !month) {
     return <main className="px-4 py-8 text-stone-600">{connectionError ?? "読み込み中…"}</main>;
@@ -83,11 +92,25 @@ export function PlannerScreen() {
         <div className="max-w-3xl">
           <h1 className="text-2xl font-semibold tracking-tight text-stone-900">シフトを自動生成</h1>
           <p className="mt-2 text-stone-600">
-            {month.label}のシフト表です。規定休日数を決めると、有給の日数を足した休みになるよう出勤を調整します。初期データでは佐藤さんの10日、山田さんの12日と18日が有給です。
+            2026年12月以降の月を選べます。規定休日数は社員だけに適用します。アルバイトとダブルトラックは、希望の休みと週2日の休日だけを守ります。
           </p>
         </div>
         <label className="text-sm text-stone-700">
-          規定休日数
+          対象月
+          <select
+            value={month.key}
+            onChange={(event) => selectPlanningMonth(event.target.value)}
+            className="mt-1 block h-12 rounded-xl border border-stone-300 bg-white px-3 outline-none ring-teal-700 focus:ring-2"
+          >
+            {(months ?? [month]).map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm text-stone-700">
+          社員の規定休日数
           <input
             type="number"
             min={0}
@@ -139,7 +162,7 @@ export function PlannerScreen() {
       ) : (
         <>
           <div className="mt-6 rounded-2xl bg-white px-4 py-3 text-sm">
-            {issues.length === 0 ? (
+            {issues.length === 0 && weeklyIssues.length === 0 ? (
               <p className="text-teal-800">すべての日で、5人以上かつ責任者1人以上を満たしています。</p>
             ) : (
               <ul className="space-y-1">
@@ -147,6 +170,11 @@ export function PlannerScreen() {
                   <li key={issue.iso} className={issue.severe ? "text-rose-800" : "text-amber-800"}>
                     {month.month}月{issue.day}日: {issue.messages.join("、")}
                     {issue.severe ? "（要確認）" : "（努力目標）"}
+                  </li>
+                ))}
+                {weeklyIssues.map((issue) => (
+                  <li key={issue} className="text-amber-800">
+                    {issue}
                   </li>
                 ))}
               </ul>
@@ -200,7 +228,7 @@ export function PlannerScreen() {
                           scope="row"
                           className={`sticky left-0 z-10 border-r border-t border-stone-200 px-4 py-2 text-left ${rowBg}`}
                         >
-                          <span className="block font-medium text-stone-900">{employee.name}</span>
+                          <span className="block font-medium text-stone-900">{employeeLabel(employee, hideNames)}</span>
                           <RoleBadges employee={employee} />
                         </th>
                         {days.map((day) => {
@@ -233,7 +261,7 @@ export function PlannerScreen() {
                                   });
                                 }}
                                 aria-pressed={working}
-                                aria-label={`${employee.name} ${month.month}月${day.day}日 ${status}、希望は${wishLabel(wish)}`}
+                                aria-label={`${employeeLabel(employee, hideNames)} ${month.month}月${day.day}日 ${status}、希望は${wishLabel(wish)}`}
                                 className={
                                   working
                                     ? "flex h-11 w-full flex-col items-center justify-center rounded-lg bg-teal-700 text-white"
@@ -257,7 +285,7 @@ export function PlannerScreen() {
                         <td className="border-t border-stone-100 px-3 text-center text-xs font-medium text-stone-700">
                           {(() => {
                             const goal = employeeHolidayGoal(
-                              employee.id,
+                              employee,
                               store.preferences,
                               month,
                               quota,
@@ -274,6 +302,9 @@ export function PlannerScreen() {
                                 {goal.paid > 0 ? (
                                   <span className="block text-violet-700">有{goal.paid}</span>
                                 ) : null}
+                                {usesHolidayQuota(employee) ? null : (
+                                  <span className="block text-stone-400">規定外</span>
+                                )}
                               </>
                             );
                           })()}
